@@ -264,3 +264,139 @@ At 10 agents (mid-game):
 - Snapshot ring buffer (last 600 ticks ≈ 60s) stored in engine
 - Frontend scrubber below the canvas to rewind and step through history
 - Pause required to scrub; resume resumes from current tick
+
+---
+
+## 🔵 Future: DPO Continuous Learning
+
+> **Goal:** use battle outcomes to fine-tune the LLM over time so agents
+> genuinely improve at surviving — without any hand-coded reward shaping.
+> The simulation becomes a self-contained data generator for preference training.
+
+### Core idea
+
+Every interaction the LLM decides produces a `(prompt, chosen, rejected)` triple
+once the game ends:
+
+- **Positive (chosen):** decisions made by the winner, or by agents that survived
+  significantly longer than average
+- **Negative (rejected):** the same prompt with the losing decision — either what
+  actually happened to a dead agent, or the rule-based default the LLM overrode
+
+```
+Game ends
+  → walk kill feed + survival times
+    → for each LLM-decided interaction:
+        if agent survived top 25%  → mark as "chosen"
+        if agent died early        → mark as "rejected"
+          → pair with same-context interaction from a survivor → DPO triple
+```
+
+---
+
+### Data schema
+
+Each training example stored as JSONL:
+
+```json
+{
+  "prompt": "Battle royale simulation. ONE word answer only.\n\nAgent A: assassin | hp=38% ⚠ LOW\n  cautious=8% territorial=85% curious=7%\n\nAgent B: ranger | hp=72%\n  cautious=48% territorial=15% curious=37%\n\nZone is shrinking. They meet. Choose one:\nCOOPERATE | COMPETE | ... | AMBUSH | HEAL\n\nAnswer:",
+  "chosen":   "AMBUSH",
+  "rejected": "NEGOTIATE",
+  "meta": {
+    "game_id": "uuid",
+    "tick": 312,
+    "agent_id": "a1f3",
+    "agent_role": "assassin",
+    "agent_survived_ticks": 480,
+    "game_total_ticks": 844,
+    "survival_percentile": 0.91
+  }
+}
+```
+
+---
+
+### Collection pipeline
+
+**New file: `backend/simulation/dpo_logger.py`**
+
+```python
+class DPOLogger:
+    def log_interaction(self, prompt, llm_response, agent_id, tick): ...
+    def on_game_over(self, agents, winner, total_ticks): ...
+        # scores each logged interaction by agent survival percentile
+        # writes chosen/rejected pairs to dpo_data/game_{id}.jsonl
+    def flush(self): ...
+```
+
+Hooked into:
+- `main.py` → `resolve_with_llm()`: log every LLM decision + prompt at interaction time
+- `engine.py` → game_over trigger: call `dpo_logger.on_game_over()`
+
+**Output directory:** `dpo_data/` (gitignored, accumulates across games)
+
+---
+
+### Training
+
+Once enough games are collected (suggest ~500 games / ~50k examples minimum):
+
+```bash
+# Install
+pip install trl datasets transformers
+
+# Fine-tune with DPO
+python train_dpo.py \
+  --model qwen3.5:2b \
+  --data dpo_data/ \
+  --output models/swarm-dpo-v1 \
+  --epochs 3 \
+  --beta 0.1        # DPO temperature — lower = closer to reference model
+```
+
+**New file: `train_dpo.py`** — uses HuggingFace `trl.DPOTrainer`:
+
+```python
+from trl import DPOTrainer, DPOConfig
+from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Load and format JSONL data into HF dataset
+# Run DPO training loop
+# Save adapter (LoRA) or full fine-tune
+# Export back to Ollama-compatible GGUF format
+```
+
+---
+
+### Swapping the model back in
+
+After training, the fine-tuned model replaces the base model in `llm.py`:
+
+```python
+MODEL = "swarm-dpo-v1"  # local Ollama model, converted from fine-tuned checkpoint
+```
+
+No other code changes — the prompt format stays identical.
+
+---
+
+### What to expect
+
+Early games: LLM makes random-ish decisions (rule-based fills gaps).
+After 100 games: model starts preferring aggressive assassin plays, cautious ranger retreats.
+After 500+ games: role-appropriate strategies emerge without being explicitly programmed.
+Interesting question: does the model generalise across roles, or overfit to the winner's role?
+
+---
+
+### Risks & open questions
+
+| Question | Notes |
+|---|---|
+| Survivorship bias | Winners aren't always skilled — they may just be lucky (zone RNG). Mitigate by using survival percentile relative to role average, not absolute position. |
+| Dataset imbalance | Warriors and berserkers die in combat more visibly; shamans die quietly to zone. Weight by interaction count per agent. |
+| Prompt consistency | Prompts must be identical between training and inference — lock the template in a shared constant. |
+| Model drift | After fine-tuning, model may become overconfident. Keep the rule-based fallback; add temperature back if needed. |
+| GGUF conversion | HuggingFace → Ollama requires `llama.cpp` quantization step. Document this in a `TRAINING.md`. |
