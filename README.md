@@ -1,7 +1,7 @@
 # Agent Swarm — Battle Royale
 
 
-Project goal is to become familiar with agent swarm and reinforcement learning + memory management ! 
+Project goal is to become familiar with agent swarm dynamics, LLM-powered decision making, and memory management — with a future phase exploring DPO (Direct Preference Optimization) for continuous learning from battle outcomes: agents that survive generate positive training examples, agents that die generate negative ones, progressively fine-tuning the model toward better survival strategies.
 
 ---
 
