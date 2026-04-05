@@ -1,5 +1,11 @@
 # Agent Swarm — Battle Royale
 
+
+Project goal is to become familiar with agent swarm and reinforcement learning + memory management ! 
+
+---
+
+
 A Fortnite-style battle royale where AI agents fight for survival in a shrinking arena.
 One winner. Agents only take damage from combat or the zone — never from timers.
 Movement is driven by survival instinct: stay in the zone, hunt the weak, flee the strong.
